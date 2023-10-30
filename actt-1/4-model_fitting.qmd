@@ -1,0 +1,65 @@
+---
+title: "ACTT-1: Model Fitting"
+---
+
+This file fits the Bayesian ordinal transition model using the `rmsb` package.
+
+## Load packages / data
+
+```{r}
+# Fit the model if TRUE
+# Set FALSE if the model has already been fit to save time
+fit <- FALSE
+```
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(rmsb)
+
+# Set number of cores for parallel processing
+options(mc.cores = parallel::detectCores())
+
+set.seed(777)
+```
+
+## Read in data
+
+```{r}
+df <- arrow::read_parquet("derived_data/actt1_main.parquet")
+```
+
+## Process data
+
+```{r}
+# Drop patients who have a gap in the data
+df <- df[!(id %in% unique(df[gap > 1]$id))]
+
+# Must be integer for model fitting
+df$y <- as.integer(df$y)
+```
+
+## Statistical Modeling
+
+```{r}
+if (fit) {
+    model <-
+    blrm(
+      formula = y ~ yprev + rcs(age, 4) + rcs(day, 6) * tx + sex,
+      ppo = ~ day,
+      cppo = function(y) y,
+      data = df,
+      refresh = 5,
+      iter = 2000,
+      chains = 4,
+      method = "sampling"
+  )
+  
+  # Save model to an RDS file
+  saveRDS(model, "/Users/max/paper1/analysis/actt1/fitted_models/model1.rds")
+}
+```
+
+
+
+

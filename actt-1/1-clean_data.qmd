@@ -1,0 +1,241 @@
+---
+title: "Clean ACTT-1 Data"
+---
+
+This file is used to derive the datasets used to analyze ACTT-1.
+
+We generate three datasets:
+
+- Main dataset
+- Survival dataset (one row per study participant)
+- Main dataset with death carried forward to day 28
+
+Each dataset is saved to a `parquet` file for use later in the analyses.
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(Hmisc)
+```
+
+## Convert from SAS
+
+The `.sas7bdat` file is the raw data file obtained from the NIH website.
+
+See more details on the conversion to an R data set here: <https://hbiostat.org/proj/covid19/actt1-create>
+
+```{r}
+s <- haven::read_sas('raw_data/raw_actt1_data.sas7bdat')
+
+d <- upData(s, lowernames=TRUE, moveUnits=TRUE,
+    rename=c(usubjid='id', adyc='day', agec='age', comorb2='co', arm='tx',
+      or15scor='y15', ordscor='y', bcsosn='y0', bdursymp='dursx'),
+    labels=c(age='Age',
+             tx = 'Assigned Treatment',
+             y0 = 'Baseline Severity',
+             y  = 'Ordinal Outcome',
+             co = 'Comborbidities',
+             day= 'Day'),
+    day = ifelse(day == 'Baseline', 0L, as.integer(day)),
+    age = ifelse(age == '>89', 90, as.numeric(age)),
+    co  = c('No Comorbidities'=0, '1 Comorbidity'=1,
+            '2 or more Comorbidities'=2, 'Unknown'=NA)[co]
+)
+```
+
+```{r}
+setDT(d, key=c('id', 'day'))
+```
+
+```{r}
+# Drop subjects with missing day
+d <- d[! is.na(day), ]
+
+# For each subject create a sequential record number
+d[, seq := 0 : (.N - 1), by=id]
+
+# Compute day of death
+d[, ddeath := if(any(y == 8)) min(day[y == 8]) else NA_integer_, by=id]
+
+# Remove records where death was carried forward
+d <- d[day <= ddeath | is.na(ddeath), ]
+
+d[, dlasthosp := max(day[y >= 3 & y < 8]), by=id]
+
+d[, dhome := min(day[y < 3]), by=id] 
+
+d[, dlasthospf := max(day[y >= 3 & y < 8 & (is.na(dhome) | day < dhome)]), by=id]
+
+d[, dcens := pmax(d29dthe0, d29dthe1, ttrecov0 + 1, ttrecov1 + 1, na.rm=TRUE)]
+```
+
+```{r}
+# First create a one row per patient data table with information that doesn't change over days
+u <- d[seq == 0, .(id, tx, ddeath, dhome, dlasthosp, dlasthospf, d29dthe0, d29dthe1, actarm, y0, ttrecov0, ttrecov1, y15,
+                   age, sex, dursx, co, dcens)]
+
+setkey(u, 'id')
+
+# Create a dataset with everyone having 28d of data
+w <- expand.grid(id=unique(d$id), day=1:28)
+setDT(w, key=c('id', 'day'))
+w <- d[w, .(id, day, y), nomatch=NA]
+w <- u[w, nomatch=NA]
+w[is.na(y) & day == 1, y := y0]
+w[, y := as.numeric(y)]
+w[is.na(y) & day > dlasthospf & day <= dcens & (is.na(ddeath) | day < ddeath), y := 1.5]
+w <- w[! is.na(y), ]
+setkey(w, id, day)
+
+d <- w
+```
+
+```{r}
+# Set yprev variable
+d[, yprev := ifelse(day == 1, y0, shift(y)), by=id]
+
+# Set gap variable
+d[, gap   := ifelse(day == 1, 1, day - shift(day)), by=id]
+
+# Remove baseline records
+d <- d[day > 0, ]
+
+# Add sequential record number
+d[, seq := (1 : .N), by=id]
+```
+
+```{r}
+df <- d
+```
+
+## Data cleaning
+
+```{r}
+# Select required columns
+df <- df[, .(id, tx, ddeath, dhome, age, sex, day, y, yprev, gap)]
+```
+
+```{r}
+# For many subjects, it was unknown on certain days whether they were in state 1 or 2
+# This was coded as 1.5
+# For simplicity, we set these all to 1. However, a sensitivity analysis should be performed.
+
+df[, y := if_else(y==1.5, 1, y)]
+df[, yprev := if_else(yprev==1.5, 1, yprev)]
+```
+
+```{r}
+# Replace IDs with numbers
+df$id <- as.integer(as.factor(df$id))
+
+# Recode data types
+df$tx <- factor(df$tx)
+df$ddeath <- as.integer(df$ddeath)
+df$dhome <- as.integer(df$dhome)
+df$age <- as.integer(df$age)
+df$day <- as.integer(df$day)
+df$sex <- as.factor(df$sex)
+df$yprev <- as.factor(df$yprev)
+df$y <- as.ordered(df$y)
+df$gap <- as.integer(df$gap)
+```
+
+## Main dataset
+
+```{r}
+# Write out main dataset
+arrow::write_parquet(x = df,
+                     sink = "derived_data/actt1_main.parquet")
+```
+
+## Survival dataset
+
+```{r}
+get_surv_data_by_subj <- function(i) {
+  
+  # Filter to current subject
+  id_df <- df[id == i, ]
+  
+  # Identify patient status
+  recovered <- (1 %in% id_df$y) | (2 %in% id_df$y) | (3 %in% id_df$y)
+  deceased <- (8 %in% id_df$y) & (!recovered)
+  censored <- !(recovered | deceased)
+
+  if (recovered) {
+    # Recovery day is the first day at state 1,2, or 3
+    # status = 1 is recovered / status = 0 is not recovered
+    recovery_day <- id_df[y %in% 1:3, min(day), ]
+    return(list(id = i, time = recovery_day, status = 1))
+  }
+
+  if (deceased) {
+    # Censor patients who died before recovery at day 29
+    return(list(id = i, time = 29, status = 0))
+  }
+
+  if (censored) {
+    # censor_day is the last recorded day
+    censor_day <- max(id_df$day)
+    return(list(id = i, time = censor_day, status = 0))
+  }
+}
+
+# Generate survival dataset
+# Calculate the survival info for each subject
+# then merge them into a data.table
+surv_df <-
+  map(unique(df$id), ~get_surv_data_by_subj(.x)) |>
+  rbindlist()
+
+# Join the survival data with the main data to keep the demographic info
+surv_df <-
+  df |>
+    select(id, tx, age, sex) |>
+    distinct(id, .keep_all = TRUE) |>
+    left_join(surv_df, by = "id")
+```
+
+```{r}
+# Write out survival dataset
+arrow::write_parquet(x = surv_df,
+                     sink = "derived_data/actt1_survival.parquet")
+```
+
+## Death carried forward dataset
+
+```{r}
+# Create a version of the data where we carry death forward
+df_state_8 <-
+  df |>
+  mutate(y = as.integer(y),
+         yprev = as.integer(yprev)) |>
+  filter(y == 8) |>
+  group_by(id) |>
+  complete(day = ddeath:28,
+           fill=list(y=8L, yprev=8L, gap=1)) |>
+  arrange(id, day) |>
+  fill(everything())
+
+df_state_1_to_7 <-
+  df |>
+  filter(y != 8) |>
+  mutate(y = as.integer(y),
+         yprev = as.integer(yprev)) |>
+  arrange(id, day)
+
+df_forward <-
+  bind_rows(df_state_1_to_7, df_state_8) |>
+  mutate(y = as.ordered(y),
+         yprev = as.factor(yprev)) |>
+  arrange(id, day)
+```
+
+```{r}
+# Write out death carried forward dataset
+arrow::write_parquet(x = df_forward,
+                     sink = "derived_data/actt1_death_carried_forward.parquet")
+```
+
+

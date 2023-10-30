@@ -1,0 +1,465 @@
+---
+title: "ACTT-1: Model Analysis"
+---
+
+The file creates the model-based visualizations and summaries.
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rmsb)
+
+library(ggdist)
+library(patchwork)
+
+set.seed(777)
+```
+
+```{r}
+library(showtext)
+
+# Add Google fonts
+font_add_google(
+  name = "Source Sans Pro",  
+  family = "Source Sans Pro"
+)
+
+# Automatically use {showtext} for plots
+showtext_auto()
+
+FONT_SIZE <- 10
+
+# Set global ggplot theme
+theme_set(cowplot::theme_cowplot(font_size=FONT_SIZE,
+                                 font_family = "Source Sans Pro"))
+```
+
+## Read in data
+
+```{r}
+df <- read_parquet("derived_data/actt1_main.parquet")
+```
+
+```{r}
+# y ~ yprev + rcs(age, 4) + rcs(day, 4) * tx
+mod <- readRDS("/Users/max/paper1/analysis/actt1/fitted_models/model1.rds")
+```
+
+```{r}
+draw_df <- as.data.frame(mod$draws)
+```
+
+## Summary
+
+```{r}
+print(mod)
+```
+
+## Diagnostics
+
+```{r}
+stanDx(mod)
+```
+
+```{r}
+stanDxplot(mod)
+```
+
+## Plots
+
+### Transition probabilities
+
+```{r}
+# Create grid of covariate settings
+newdata <-
+  expand.grid(
+    tx = unique(df$tx),
+    age = median(df$age),  ## 59
+    sex = df$sex[[1]],     ## Male
+    day = unique(df$day),
+    yprev = unique(df$yprev)
+  )
+
+# Add an identifier to each for (for merging later)
+newdata$setting <- 1:nrow(newdata)
+
+# Convert to data.table
+setDT(newdata)
+```
+
+```{r}
+# Get transition probabilities at each covariate setting
+p <- predict(mod, newdata, posterior.summary = "all", type="fitted.ind")
+
+# Convert to data.table
+p <- as.data.table(p)
+
+# Rename columns
+setnames(p,
+         old = c("V1", "V2", "V3", "value"),
+         new = c("draw", "setting", "y", "p"))
+
+# Convert setting to integer from character
+p$setting <- as.integer(p$setting)
+```
+
+```{r}
+# Merge to posterior transition probabilities with the original covariate settings
+setkey(newdata, "setting")
+setkey(p, "setting")
+newdata <- newdata[p]
+
+newdata$y <- as.factor(newdata$y)
+levels(newdata$y) <- 1:8
+```
+
+```{r}
+plot_trans_probs <- function(prev_state){
+
+  fig <-
+    newdata |>
+    filter(yprev == prev_state) |>
+      ggplot() +
+      aes(x = day, y = p, fill=y, color=y) +
+      stat_lineribbon(.width = c(0.8, 0.95), linewidth=0.5, alpha=0.5) +
+      scale_color_brewer(palette="Dark2", guide = 'none') +
+      scale_fill_brewer(palette = "Dark2") +
+      facet_wrap(~ tx) +
+      labs(x = "Study Day",
+          y = "Posterior probability",
+          title = glue::glue("Previous state = {prev_state}"),
+          fill = "State") +
+      scale_y_continuous(breaks = seq(0, 0.8, 0.1)) +
+      scale_x_continuous(breaks = seq(2, 28, 2)) +
+      coord_cartesian(xlim = c(0, 28), ylim = c(0, 0.8))
+}
+```
+
+```{r}
+# Plot and save figures
+fig <- (plot_trans_probs(3) /
+        plot_trans_probs(4) /
+        plot_trans_probs(5) /
+        plot_trans_probs(6))
+
+ggsave(
+  filename = "./figures/trans_prob_posterior.pdf", 
+  plot = fig,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+
+### Difference in linear predictor over time
+
+#### Treatment
+
+```{r}
+# Create grid of covariate settings
+newdata <-
+  expand.grid(
+    tx = unique(df$tx),
+    age = median(df$age),  ## 59
+    sex = df$sex[[1]],     ## Male
+    day=seq(1, 28, length.out=200),
+    yprev = 4
+  )
+
+# Add an identifier to each for (for merging later)
+newdata$setting <- 1:nrow(newdata)
+
+# Convert to data.table
+setDT(newdata)
+```
+
+```{r}
+# Get transition probabilities at each covariate setting
+p <- predict(mod, newdata, posterior.summary = "all", type="lp")
+
+p <-reshape2::melt(p)
+
+# Convert to data.table
+p <- as.data.table(p)
+
+# Rename columns
+setnames(p,
+         old = c("Var1", "Var2", "value"),
+         new = c("draw", "setting", "y"))
+
+# Convert setting to integer from character
+p$setting <- as.integer(p$setting)
+```
+
+```{r}
+# Merge to posterior transition probabilities with the original covariate settings
+setkey(newdata, "setting")
+setkey(p, "setting")
+newdata <- newdata[p]
+```
+
+```{r}
+linpred_time <-
+newdata |>
+  select(tx, day, y, draw) |>
+  pivot_wider(names_from = tx, values_from = y) |>
+  mutate(diff = Remdesivir - Placebo) |>
+  ggplot() +
+  aes(x = day, y = diff) +
+  stat_lineribbon(.width = c(0.8, 0.9, 0.95, 0.99)) +
+  geom_hline(yintercept = 0, linetype=2) +
+  scale_color_brewer(palette="Dark2") +
+  scale_fill_brewer() +
+  scale_x_continuous(breaks = seq(1, 28, 1)) +
+  labs(x = "Study Day",
+       y = "Treatment difference in linear predictor",
+       fill = "Posterior interval",
+       title = "(A)")
+```
+
+#### Age
+
+```{r}
+# Create grid of covariate settings
+newdata <-
+  expand.grid(
+    tx = df$tx[[1]],  ## Placebo
+    age = seq(min(df$age), max(df$age), 1),
+    sex = df$sex[[1]], ## Male
+    day = 10,
+    yprev = 4
+  )
+
+# Add an identifier to each for (for merging later)
+newdata$setting <- 1:nrow(newdata)
+
+# Convert to data.table
+setDT(newdata)
+```
+
+```{r}
+# Get transition probabilities at each covariate setting
+p <- predict(mod, newdata, posterior.summary = "all", type="lp")
+
+p <-reshape2::melt(p)
+
+# Convert to data.table
+p <- as.data.table(p)
+
+# Rename columns
+setnames(p,
+         old = c("Var1", "Var2", "value"),
+         new = c("draw", "setting", "y"))
+
+# Convert setting to integer from character
+p$setting <- as.integer(p$setting)
+```
+
+```{r}
+# Merge to posterior transition probabilities with the original covariate settings
+setkey(newdata, "setting")
+setkey(p, "setting")
+newdata <- newdata[p]
+```
+
+```{r}
+linpred_age <-
+newdata |>
+  ggplot() +
+  aes(x = age, y = y) +
+  stat_lineribbon(.width = c(0.8, 0.9, 0.95, 0.99)) +
+  scale_color_brewer(palette="Dark2") +
+  scale_fill_brewer() +
+  scale_x_continuous(breaks = seq(20, 90, 5)) +
+  labs(x = "Age (years)",
+       y = "Linear predictor",
+       fill = "Posterior interval",
+       title = "(B)")
+
+```
+
+```{r}
+fig <- linpred_time / linpred_age
+
+ggsave(
+  filename = "./figures/treatment_and_age_effect.pdf", 
+  plot = fig,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+
+### Transition Probability Grid
+
+```{r}
+# Create grid of covariate settings
+newdata_placebo <-
+  expand.grid(
+    tx = unique(df$tx)[[1]],
+    age = median(df$age),
+    sex = df$sex[[1]],
+    day = c(1, 2, 5, 7, 14, 21, 28),
+    yprev = unique(df$yprev)
+  )
+
+# Add an identifier to each for (for merging later)
+newdata_placebo$setting <- 1:nrow(newdata_placebo)
+
+# Convert to data.table
+setDT(newdata_placebo)
+
+# Get transition probabilities at each covariate setting
+p <- predict(mod, newdata_placebo, type="fitted.ind")
+
+# Convert to data.table
+p <- as.data.table(p)
+
+p <- select(p, y, setting = x, Mean)
+
+# Convert setting to integer from character
+p$setting <- as.integer(p$setting)
+
+# Merge to posterior transition probabilities with the original covariate settings
+setkey(newdata_placebo, "setting")
+setkey(p, "setting")
+newdata_placebo <- newdata_placebo[p]
+
+newdata_placebo$y <- as.factor(newdata_placebo$y)
+levels(newdata_placebo$y) <- 1:8
+```
+
+```{r}
+# Create grid of covariate settings
+newdata_treatment <-
+  expand.grid(
+    tx = unique(df$tx)[[2]],
+    age = median(df$age),
+    sex = df$sex[[1]],
+    day = c(1, 2, 5, 7, 14, 21, 28),
+    yprev = unique(df$yprev)
+  )
+
+# Add an identifier to each for (for merging later)
+newdata_treatment$setting <- 1:nrow(newdata_treatment)
+
+# Convert to data.table
+setDT(newdata_treatment)
+
+# Get transition probabilities at each covariate setting
+p <- predict(mod, newdata_treatment, type="fitted.ind")
+
+# Convert to data.table
+p <- as.data.table(p)
+
+p <- select(p, y, setting = x, Mean)
+
+# Convert setting to integer from character
+p$setting <- as.integer(p$setting)
+
+# Merge to posterior transition probabilities with the original covariate settings
+setkey(newdata_treatment, "setting")
+setkey(p, "setting")
+newdata_treatment <- newdata_treatment[p]
+
+newdata_treatment$y <- as.factor(newdata_treatment$y)
+levels(newdata_treatment$y) <- 1:8
+```
+
+```{r}
+probs <- bind_rows(newdata_placebo, newdata_treatment)
+
+probs <-
+  probs |>
+  pivot_wider(names_from = tx, values_from = Mean) |>
+  mutate(diff = Remdesivir - Placebo)
+```
+
+```{r}
+# Treatment= Placebo
+# Sex = Male
+# Age = 59
+
+TEXT_SIZE <- 1.6
+
+fig1 <-
+  newdata_placebo |>
+  mutate(Mean = round(Mean,3)) |>
+    mutate(yprev = as.factor(yprev), y = as.factor(y)) |>
+    ggplot() +
+    aes(x = yprev, y = y, fill = Mean) +
+    geom_tile() +
+  geom_text(mapping=aes(x=yprev, y=y, label=Mean),
+             color="white",
+             family = "Source Sans Pro",
+             size=TEXT_SIZE) +
+  scale_fill_viridis_c(limits = c(0,1), breaks = seq(0, 1, 0.2)) +
+    facet_wrap(~day,
+               nrow = 2,
+               scales = "free",
+               labeller = labeller(day = \(x) glue::glue("Day {as.integer(x)}"))) +
+    scale_x_discrete(drop=FALSE) +
+    scale_y_discrete(drop=FALSE) +
+    theme_bw(base_family = "Source Sans Pro",
+             base_size = FONT_SIZE) +
+   theme(aspect.ratio = 1,
+         legend.position = c(0.88, 0.25),
+         legend.title = element_text(size = FONT_SIZE-2),
+         plot.title = element_text(face = "bold",
+                                   vjust = 1)) +
+    labs(x = "Previous State",
+         y = "Current State",
+         fill = "Transition Probability",
+         title = "(A)") +
+  guides(fill=guide_colourbar(direction="horizontal", title.position = "top"))
+
+
+fig2 <-
+  probs |>
+  mutate(diff = round(diff,3)) |>
+    mutate(yprev = as.factor(yprev), y = as.factor(y)) |>
+    ggplot() +
+    aes(x = yprev, y = y, fill = diff) +
+    geom_tile() +
+  geom_text(mapping=aes(x=yprev, y=y, label=diff),
+             color="black",
+             family = "Source Sans Pro",
+             size=TEXT_SIZE) +
+  scale_fill_distiller(type="div",
+                       palette = "RdBu",
+                       direction = 1,
+                       limits = c(-0.06, 0.06),
+                       breaks = seq(-0.06, 0.06, 0.03)) +
+    facet_wrap(~day,
+               nrow = 2,
+               scales = "free",
+               labeller = labeller(day = \(x) glue::glue("Day {as.integer(x)}"))) +
+    scale_x_discrete(drop=FALSE) +
+    scale_y_discrete(drop=FALSE) +
+    theme_bw(base_family = "Source Sans Pro",
+             base_size = FONT_SIZE) +
+   theme(aspect.ratio = 1,
+         legend.position = c(0.88, 0.25),
+         legend.title = element_text(size = FONT_SIZE-2),
+         plot.title = element_text(face = "bold",
+                                   vjust = 1)) +
+    labs(x = "Previous State",
+         y = "Current State",
+         title = "(B)",
+         fill = "Difference in\ntransition probability\n(Remdesivir - Placebo)") +
+  guides(fill=guide_colourbar(direction="horizontal", title.position = "top"))
+
+fig <- fig1/fig2
+
+ggsave(
+  filename = "./figures/model_transitions_heat.pdf", 
+  plot = fig,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+

@@ -1,0 +1,261 @@
+---
+title: "ACTT-1: Derived Quantities"
+---
+
+The file creates the visualizations for mean time recovered and days benefit.
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rmsb)
+
+library(ggdist)
+library(patchwork)
+
+library(furrr)
+future::plan(multisession, workers=12)
+
+set.seed(777)
+```
+
+```{r}
+source("helper_functions/mean_time_unwell.R")
+source("helper_functions/days_benefit.R")
+```
+
+
+```{r}
+library(showtext)
+
+# Add Google fonts
+font_add_google(
+  name = "Source Sans Pro",  
+  family = "Source Sans Pro"
+)
+
+# Automatically use {showtext} for plots
+showtext_auto()
+
+FONT_SIZE <- 10
+
+# Set global ggplot theme
+theme_set(cowplot::theme_cowplot(font_size=FONT_SIZE,
+                                 font_family = "Source Sans Pro"))
+```
+
+## Read in data
+
+```{r}
+df <- read_parquet("derived_data/actt1_main.parquet")
+```
+
+```{r}
+# y ~ yprev + rcs(age, 4) + rcs(day, 4) * tx
+mod <- readRDS("/Users/max/paper1/analysis/actt1/fitted_models/model1.rds")
+```
+
+```{r}
+draw_df <- as.data.frame(mod$draws)
+```
+
+## Mean time in state / days benefit
+
+```{r}
+sop_placebo <- soprobMarkovOrdm(
+  mod,
+  data = list(tx = "Placebo", age = 50, sex="M", yprev=4),
+  times = 1:28,
+  ylevels = 1:8,
+  absorb = 8,
+  tvarname = "day",
+  pvarname = "yprev"
+)
+
+sop_tx <- soprobMarkovOrdm(
+  mod,
+  data = list(tx = "Remdesivir", age = 50, sex="M", yprev=4),
+  times = 1:28,
+  ylevels = 1:8,
+  absorb = 8,
+  tvarname = "day",
+  pvarname = "yprev"
+)
+```
+
+```{r}
+mean_time_unwell <- calculate_mean_time_unwell(sop_tx, sop_placebo, threshold = 3)
+days_benefit <- calculate_days_benefit(sop_tx, sop_placebo)
+```
+
+```{r}
+hdpi <- HPDint(mean_time_unwell)
+lower <- hdpi[[1]]
+upper <- hdpi[[2]]
+
+posterior_median <- median(mean_time_unwell)
+p_greater_than_0 <- mean(mean_time_unwell > 0)
+p_greater_than_1 <- mean(mean_time_unwell > 1)
+
+label <-
+  glue::glue("
+       Posterior Median: {round(posterior_median,3)}
+       95% Posterior Interval: [{round(lower, 3)}, {round(upper, 3)}]
+       P(Difference > 0) = {round(p_greater_than_0, 4)}
+       P(Difference > 1) = {round(p_greater_than_1, 4)}
+")
+
+fig1 <-
+tibble(x = mean_time_unwell) |>
+  ggplot() +
+  aes(x = x, y = after_stat(density)) +
+  geom_histogram(bins = 100, color="black", fill="gray") +
+  annotate("text", x = 3, y = 0.65,
+           label = label,
+           hjust=0,
+           size = 9/.pt,
+           family = "Source Sans Pro") +
+  geom_vline(xintercept = 0, linetype=2) +
+  coord_cartesian(xlim = c(-1, 5), ylim = c(0, 1.2)) +
+  scale_x_continuous(breaks = seq(-1, 5, by=1)) +
+  labs(x = "Treatment difference in mean days recovered", y = "Posterior Density")
+```
+
+```{r}
+hdpi <- HPDint(days_benefit)
+lower <- hdpi[[1]]
+upper <- hdpi[[2]]
+
+posterior_median <- median(days_benefit)
+p_greater_than_0 <- mean(days_benefit > 0)
+p_greater_than_1 <- mean(days_benefit > 1)
+
+label <-
+  glue::glue("
+       Posterior Median: {round(posterior_median,3)}
+       95% Posterior Interval: [{round(lower, 3)}, {round(upper, 3)}]
+       P(Difference > 0) = {round(p_greater_than_0, 4)}
+       P(Difference > 1) = {round(p_greater_than_1, 4)}
+")
+
+fig2 <-
+tibble(x = days_benefit) |>
+  ggplot() +
+  aes(x = x, y = after_stat(density)) +
+  geom_histogram(bins = 100, color="black", fill="gray") +
+  annotate("text", x = 3, y = 0.65,
+           label = label,
+           size = 9/.pt,
+           hjust=0,
+           family = "Source Sans Pro") +
+  geom_vline(xintercept = 0, linetype=2) +
+  coord_cartesian(xlim = c(-1, 5), ylim = c(0, 1.2)) +
+  scale_x_continuous(breaks = seq(-1, 5, by=1)) +
+  labs(x = "Days benefit", y = "Posterior Density")
+```
+
+## Grid plot
+
+```{r}
+covars <- expand.grid(age = seq(30, 80, by=5), yprev = c(4,5,6,7))
+
+get_diff <- function(age, yprev){
+  
+# Placebo
+sop_1 <- soprobMarkovOrdm(
+  mod,
+  data = list(tx = "Placebo", age = age, sex="M", yprev=yprev),
+  times = 1:28,
+  ylevels = 1:8,
+  absorb = 8,
+  tvarname = "day",
+  pvarname = "yprev"
+)
+
+# Treatment
+sop_2 <- soprobMarkovOrdm(
+  mod,
+  data = list(tx = "Remdesivir", age = age, sex="M", yprev=yprev),
+  times = 1:28,
+  ylevels = 1:8,
+  absorb = 8,
+  tvarname = "day",
+  pvarname = "yprev"
+)
+
+  diff_in_mean_time_unwell <-
+  calculate_mean_time_unwell(
+                            sop_2,
+                            sop_1,
+                            threshold = 3
+                             )
+
+   return(mean(diff_in_mean_time_unwell > 1))                  
+}
+
+covars$p_benefit_1 <- future_pmap_dbl(covars,
+                                      get_diff,
+                                      .progress=TRUE,
+                                      .options = furrr_options(seed=TRUE))
+```
+
+```{r}
+# Format probabilities with two digits
+covars$p_benefit_1_label <-
+  round(covars$p_benefit_1, 2) |>
+  sprintf(fmt = "%.2f")
+
+fig3 <-
+covars |>
+  ggplot() + 
+  aes(x=age, y=yprev, fill=p_benefit_1) +
+  geom_tile() +
+  geom_label(mapping=aes(x=age, y=yprev, label=p_benefit_1_label),
+             color="black",
+             fill="white",
+             family = "Source Sans Pro",
+             size=3) +
+  scale_fill_viridis_c(limits=c(0,1)) +
+  scale_x_continuous(breaks = seq(30, 80, by=5)) +
+  labs(x="Age (Years)",
+       y="Baseline State",
+       fill="P(Treatment difference in number of days recovered > 1 day)") +
+  guides(fill=guide_colourbar(direction="horizontal", title.position = "top")) +
+  theme(legend.key.width = unit(0.8, "in"),
+        legend.position = c(0.05, 1.07),
+        plot.margin = margin(t=0.5, unit="in"))
+```
+
+## Combine figures
+
+```{r}
+fig1 <- fig1 + labs(title = "(A)")
+fig2 <- fig2 + labs(title = "(B)")
+fig3 <- fig3 + labs(title = "(C)")
+```
+
+```{r}
+layout <- "
+A
+B
+C
+C
+"
+
+fig <-
+  (fig1 + fig2 + fig3) +
+  plot_layout(design = layout)
+
+ggsave(
+  filename = "./figures/derived_quantities.pdf", 
+  plot = fig,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+
+
+

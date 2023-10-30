@@ -1,0 +1,41 @@
+---
+title: "ACTT-1 Data Summary"
+---
+
+This file provides a general summary of the ACTT-1 dataset.
+
+## Load packages / data
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(Hmisc)
+```
+
+```{r}
+df <- arrow::read_parquet("derived_data/actt1_main.parquet")
+```
+
+## Overall summary
+
+```{r}
+skimr::skim(df)
+```
+
+## Demographic variables summary
+
+```{r}
+df |>
+  distinct(id, .keep_all = TRUE) |>
+  Hmisc::describe() |>
+  html()
+```
+
+## Gaps in data
+
+13 participants have a gap in their data.
+
+```{r}
+filter(df, gap > 1)$id |> unique() |> length()
+```
+
