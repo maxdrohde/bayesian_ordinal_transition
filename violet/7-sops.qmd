@@ -1,0 +1,283 @@
+---
+title: "VIOLET: State occupancy probabilities"
+---
+
+The file creates the visualizations for the state occupancy probabilities.
+
+```{r}
+# Generating marginalized SOPs takes time
+# so set to FALSE unless they need to be regenerated
+generate_SOPS <- FALSE
+```
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rmsb)
+
+library(ggdist)
+library(patchwork)
+
+library(furrr)
+future::plan(multisession, workers=12)
+
+set.seed(777)
+```
+
+```{r}
+library(showtext)
+
+# Add Google fonts
+font_add_google(
+  name = "Source Sans Pro",  
+  family = "Source Sans Pro"
+)
+
+# Automatically use {showtext} for plots
+showtext_auto()
+
+FONT_SIZE <- 10
+
+# Set global ggplot theme
+theme_set(cowplot::theme_cowplot(font_size=FONT_SIZE,
+                                 font_family = "Source Sans Pro"))
+```
+
+## Read in data
+
+```{r}
+df <- read_parquet("derived_data/violet_main.parquet")
+```
+
+```{r}
+mod <- readRDS("./fitted_models/model1.rds")
+```
+
+## Conditional State Occupancy Probabilities
+
+### Placebo
+
+```{r}
+sop_placebo <- soprobMarkovOrdm(
+  mod,
+  data = list(tx = 0, age = 50, yprev=2),
+  times = 1:28,
+  ylevels = 1:4,
+  absorb = 4,
+  tvarname = "day",
+  pvarname = "yprev"
+)
+
+sop_placebo <- as.data.table(sop_placebo)
+
+# Rename columns
+setnames(sop_placebo,
+         old = c("V1", "V2", "V3", "value"),
+         new = c("draw", "day", "state", "sop"))
+
+sop_placebo$day <- as.integer(sop_placebo$day)
+sop_placebo$state <- as.factor(sop_placebo$state)
+sop_placebo$tx <- 0
+```
+
+### Treatment
+
+```{r}
+sop_tx <- soprobMarkovOrdm(
+  mod,
+  data = list(tx = 1, age = 50, yprev=2),
+  times = 1:28,
+  ylevels = 1:4,
+  absorb = 4,
+  tvarname = "day",
+  pvarname = "yprev"
+)
+
+sop_tx <- as.data.table(sop_tx)
+
+# Rename columns
+setnames(sop_tx,
+         old = c("V1", "V2", "V3", "value"),
+         new = c("draw", "day", "state", "sop"))
+
+sop_tx$day <- as.integer(sop_tx$day)
+sop_tx$state <- as.factor(sop_tx$state)
+sop_tx$tx <- 1
+```
+
+### Create plot
+
+```{r}
+sop <- bind_rows(sop_tx, sop_placebo)
+sop$tx <- as.factor(sop$tx)
+```
+
+```{r}
+fig_conditional <-
+  sop |>
+    ggplot() +
+    aes(x = day,
+        y = sop,
+        linetype = tx) +
+    stat_lineribbon(aes(fill = state),
+                    alpha = 0.5,
+                    .width = c(0.95),
+                    linewidth = 0.6) +
+    scale_color_brewer(palette = "Dark2", guide="none") +
+    scale_fill_brewer(palette = "Dark2") +
+    scale_x_continuous(limits = c(min(sop$day), max(sop$day)),
+                                breaks = unique(sop$day)) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(x = "Study Day",
+         y = "Conditional SOP",
+         subtitle = "Conditional state occupancy probabilities (baseline state = 4)",
+         fill = "State",
+         linetype="Treatment")
+```
+
+## Marginalized State Occupancy Probabilities
+
+```{r}
+baseline_df <- filter(df, day == 1)
+```
+
+```{r}
+write_SOP <- function(i, tx, baseline_df){
+  
+  row <- baseline_df[i]
+  
+  sops <-
+  soprobMarkovOrdm(
+    mod,
+    data = list(tx = tx, age = row$age, yprev=row$yprev),
+    times = 1:28,
+    ylevels = 1:4,
+    absorb = 4,
+    tvarname = "day",
+    pvarname = "yprev"
+  )
+  
+  # Because of the size of the data, only use the first 500 MCMC draws
+  sops <- sops[1:500,,]
+  
+  sops <- as.data.table(sops)
+
+  # Rename columns
+  setnames(sops,
+           old = c("V1", "V2", "V3", "value"),
+           new = c("draw", "day", "state", "sop"))
+  
+  sops$day <- as.integer(sops$day)
+  sops$state <- as.factor(sops$state)
+  sops$tx <- tx
+  sops$i <- i
+  
+  folder <- glue::glue("marginalized_sop_{tx}/msop_{i}.parquet")
+  
+  arrow::write_parquet(
+    x = sops,
+    sink = folder
+    )
+}
+```
+
+### Generate marginalized SOPs
+
+```{r}
+# Placebo
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 0, baseline_df),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+```{r}
+# Treatment
+if (generate_SOPS) {
+    furrr::future_walk(1:nrow(baseline_df), \(x) write_SOP(x, 1, baseline_df),
+                       .progress=TRUE,
+                       .options = furrr_options(seed=TRUE))
+}
+```
+
+### Read maginalized SOPs
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./marginalized_sop_0/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+placebo_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+placebo_df <- placebo_df[, .(sop = mean(sop)), by = .(state, day, draw, tx)]
+placebo_df[, state := as.factor(state)]
+```
+
+```{r}
+# Get list of all files
+files <- fs::dir_ls("./marginalized_sop_1/", glob = "*.parquet")
+
+# Read in each parquet file as a data.frame and merge into a data.table
+tx_df <- map(files, \(x) arrow::read_parquet(x), .progress=TRUE) |> rbindlist()
+
+# Average SOPs over covariate settings -- for each state, day, and MCMC draw
+tx_df <- tx_df[, .(sop = mean(sop)), by = .(state, day, draw, tx)]
+tx_df[, state := as.factor(state)]
+```
+
+```{r}
+sop_df <-
+  bind_rows(placebo_df, tx_df) |>
+  mutate(tx = as.factor(tx))
+```
+
+### Plotting
+
+#### Marginalized SOPs
+
+```{r}
+fig_marginalized <-
+sop_df |>
+  ggplot() +
+  aes(x = day, y = sop) +
+  ggdist::stat_lineribbon(aes(fill = state, linetype = tx),
+                          linewidth = 0.6,
+                          alpha = 0.5,
+                          .width = c(0.95)) +
+  scale_color_brewer(palette = "Dark2", guide="none") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_continuous(breaks = seq(1, 28, by=1)) +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Study Day",
+   y = "Marginalized SOP",
+   subtitle = "Marginalized state occupancy probabilities",
+   fill = "State",
+   linetype = "Treatment")
+```
+
+#### Combine
+
+```{r}
+fig <-
+  (fig_conditional + labs(title = ("(A)"))) /
+  (fig_marginalized +
+     labs(title = ("(B)")) +
+     theme(legend.position = "none"))
+
+ggsave(
+  filename = "./figures/sops.pdf", 
+  plot = fig,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+
+
+

@@ -1,0 +1,315 @@
+---
+title: "VIOLET: EDA Figures"
+---
+
+This file creates exploratory data visualizations for the VIOLET dataset.
+
+## Load packages / data
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+
+library(ggdist)
+library(patchwork)
+library(geomtextpath)
+
+set.seed(777)
+
+FONT_SIZE <- 10
+```
+
+```{r}
+library(showtext)
+
+# Add Google fonts
+font_add_google(
+  name = "Source Sans Pro",  
+  family = "Source Sans Pro"
+)
+
+# Automatically use {showtext} for plots
+showtext_auto()
+
+# Set global ggplot theme
+theme_set(cowplot::theme_cowplot(font_size=FONT_SIZE,
+                                 font_family = "Source Sans Pro"))
+```
+
+
+## Read in data
+
+```{r}
+df <- read_parquet("derived_data/violet_main.parquet")
+df_forward <- read_parquet("derived_data/violet_death_carried_forward.parquet")
+```
+
+## Figure 1: Tile plot
+
+```{r}
+format_id <- function(ids){
+  ids |>
+    as.factor() |>
+    as.integer() |>
+    as.factor()
+}
+
+# Modified from ColorBrewer
+color_fill_scale <- c('#fed976','#fd8d3c', '#e31a1c', '#000000')
+
+ids <- sample(unique(df$id), 50)
+
+fig <-
+df |>
+  filter(id %in% ids) |>
+  mutate(id = format_id(id)) |>
+  ggplot() +
+  aes(y=id, x=day) +
+  geom_tile(mapping = aes(fill = y),
+            width=0.95, height=0.4) +
+  scale_fill_manual(values = color_fill_scale) +
+  scale_x_continuous(breaks = 1:28) +
+  labs(x = "Study day",
+       y = "Participant ID",
+       fill = "State")
+```
+
+```{r}
+ggsave(
+  filename = "./figures/tile_plot.pdf", 
+  plot = fig,
+  units="in",
+  height=6,
+  width=8,
+  dpi=500)
+```
+
+## Figure 2a / 2b: Empirical SOP Plots
+
+```{r}
+# Bar plot
+fig_bar <-
+df_forward |>
+      mutate(y = as.factor(y)) |>
+      group_by(day, y, tx) |>
+      count() |>
+      group_by(day, tx) |>
+      mutate(n = n / sum(n)) |>
+      ggplot() +
+      aes(x = day, y = n, fill=y) +
+      geom_col(position="fill") +
+      scale_x_continuous(breaks = seq(2,28,2)) +
+      scale_y_continuous(breaks = seq(0, 1, 0.1)) +
+      facet_wrap(~tx, nrow=1) +
+      labs(x = "Study Day",
+           y = "Cumulative Proportion",
+           fill = "State",
+           title = "(A)") +
+      scale_fill_manual(values = color_fill_scale)
+```
+
+```{r}
+# Line plot
+fig_line <-
+df_forward |>
+  mutate(y = as.factor(y)) |>
+  group_by(day, y, tx) |>
+  count() |>
+  group_by(day, tx) |>
+  mutate(n = n / sum(n)) |>
+  ggplot() +
+  aes(x = day, y = n, color=y, linetype=tx) +
+  geom_line() +
+  geom_point(alpha=0.6, size=1.5) +
+  scale_x_continuous(breaks = unique(df_forward$day)) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
+  coord_cartesian(ylim = c(0,0.7)) +
+  labs(x = "Study day",
+       y = "Empirical State Occupancy Probability",
+       color = "State",
+       linetype = "Treatment",
+       title = "(B)") +
+  cowplot::theme_minimal_hgrid(font_size = FONT_SIZE,
+                               font_family = "Source Sans Pro")
+```
+
+```{r}
+fig <- fig_bar / fig_line
+
+ggsave(
+  filename = "./figures/empirical_SOP.pdf", 
+  plot = fig,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+
+
+## Figure 3: Transition Plot
+
+```{r}
+# Create the transition data.frame for day = x
+get_transitions_df <- function(df, x){
+  
+  subtable <-
+  df[day == x, table(y,yprev)] |>
+  as.data.table()
+
+  subtable[, day := x]
+  return(subtable)
+}
+```
+
+```{r}
+# Get the transition data frame for each day and combine
+# into a single data frame
+df_transitions <- 
+  map(2:28, ~get_transitions_df(df_forward, .x)) |>
+  rbindlist()
+
+# Compute the proportion of transitions relative to the number of
+# transitions on each day
+df_transitions <-
+  df_transitions |>
+    mutate(total = sum(N),
+           p = N / total, .by=day)
+```
+
+```{r}
+# Create the plot
+fig <-
+  df_transitions |>
+    mutate(yprev = as.factor(yprev), y = as.factor(y)) |>
+    filter(p != 0) |>
+    ggplot() +
+    aes(x = yprev, y = y, size = p) +
+    geom_point() +
+    scale_size_area(breaks = seq(0, 1, by = 0.1), max_size = 4) +
+    facet_wrap(~day,
+               nrow = 4,
+               scales = "free",
+               labeller = labeller(day = \(x) glue::glue("Day {as.integer(x)-1} to {as.integer(x)}"))) +
+    scale_x_discrete(drop=FALSE) +
+    scale_y_discrete(drop=FALSE) +
+    theme_bw(base_family = "Source Sans Pro",
+             base_size = FONT_SIZE) +
+    theme(legend.margin = margin(0, 0, 0, 0),
+          legend.box.margin = margin(0, 0, 0, 0),
+          legend.box.spacing = unit(FONT_SIZE, "pt"),
+          legend.spacing = unit(FONT_SIZE, "pt"),
+          legend.key.size = unit(1.1 * FONT_SIZE, "pt")) +
+    theme(axis.ticks = element_blank(),
+          legend.position = c(0.92, 0.1)) +
+   theme(aspect.ratio = 1) +
+    labs(x = "Previous State",
+         y = "Current State",
+         size = "Proportion")
+
+ggsave(
+  filename = "./figures/empirical_transitions.pdf", 
+  plot = fig,
+  units="in",
+  height=5.5,
+  width=8,
+  dpi=500)
+```
+
+
+## Figure 4: Correlation plot
+
+```{r}
+# Create correlation matrix
+# We use the data with death carried forward
+corr <-
+  df_forward |>
+    select(id, day, y) |>
+    arrange(day) |>
+    mutate(y = as.integer(y)) |>
+    pivot_wider(names_from = day, values_from = y) |>
+    ungroup() |>
+    select(-id) |>
+    cor(method="spearman", use="pairwise.complete.obs")
+```
+
+```{r}
+# Create correlation plot
+fig <-
+  corr |>
+  as.data.frame() |>
+  rownames_to_column() |>
+  pivot_longer(-rowname) |>
+  mutate(rowname = as.integer(rowname), name = as.integer(name)) |>
+  mutate(rowname = as.factor(rowname), name = as.factor(name)) |>
+  filter(rowname != name) |>
+  ggplot() + 
+    aes(x=rowname, y=name, fill=value) +
+    geom_tile() +
+    geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
+              color="black",
+              size = 2.5) +
+    scale_fill_viridis_c(limits=c(0,1), breaks = seq(0,1, length.out = 11)) +
+    expand_limits(value = c(0, 1)) +
+    cowplot::theme_half_open(font_size=FONT_SIZE,
+              font_family = "Source Sans Pro") +
+    theme(plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank()) +
+    theme(legend.key.height = unit(0.8, "in")) +
+    labs(x="Study Day",
+         y="Study Day",
+         fill="")
+
+ggsave(
+  filename = "./figures/corr_mat.pdf", 
+  plot = fig,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+
+## Supplement: Transition Heatmap
+
+```{r}
+max_p <- max(df_transitions$p)
+
+fig2 <-
+  df_transitions |>
+  mutate(p = round(p,2)) |>
+    mutate(yprev = as.factor(yprev), y = as.factor(y)) |>
+    ggplot() +
+    aes(x = yprev, y = y, fill = p) +
+    geom_tile() +
+  geom_text(mapping=aes(x=yprev, y=y, label=p),
+             color="white",
+             family = "Source Sans Pro",
+             size=1) +
+  scale_fill_viridis_c(limits=c(0, max_p), guide = "none") +
+    facet_wrap(~day,
+               nrow = 4,
+               scales = "free",
+               labeller = labeller(day = \(x) glue::glue("Day {as.integer(x)-1} to {as.integer(x)}"))) +
+    scale_x_discrete(drop=FALSE) +
+    scale_y_discrete(drop=FALSE) +
+    theme_bw(base_family = "Source Sans Pro",
+             base_size = FONT_SIZE) +
+   theme(aspect.ratio = 1) +
+    labs(x = "Previous Day",
+         y = "Current Day",
+         size = "Proportion")
+
+ggsave(
+  filename = "./figures/empirical_transitions_heat.pdf", 
+  plot = fig2,
+  units="in",
+  height=5.5,
+  width=8,
+  dpi=500)
+```
+
+

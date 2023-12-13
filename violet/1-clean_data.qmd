@@ -1,0 +1,113 @@
+---
+title: "Clean VIOLET Data"
+---
+
+This file is used to derive the datasets used to analyze VIOLET.
+
+We generate two datasets:
+
+- Main dataset
+- Main dataset with death carried forward to day 28
+
+Each dataset is saved to a `parquet` file for use later in the analyses.
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(Hmisc)
+
+set.seed(777)
+```
+
+```{r}
+# Load simulated VIOLET data from Hmisc data repository
+Hmisc::getHdata("simlongord")
+
+# Description of how the simulated data was created can be found here:
+# https://hbiostat.org/data/repo/simlongord
+```
+
+```{r}
+# Only use 500 random participants
+ids <- sample(unique(simlongord$id), 500, replace = FALSE)
+df <- filter(simlongord, id %in% ids)
+
+setDT(df)
+```
+
+## Data cleaning
+
+```{r}
+# Select required columns
+df <- 
+  df |>
+  select(id, tx, age, day = time, y, yprev, gap)
+```
+
+```{r}
+# Replace IDs with numbers
+df$id <- as.integer(as.factor(df$id))
+
+# Recode data types
+df$tx <- factor(df$tx)
+df$age <- as.integer(df$age)
+df$day <- as.integer(df$day)
+df$yprev <- as.factor(df$yprev) |> fct_rev() |> as.integer() |> as.factor()
+df$y <- as.ordered(df$y) |> fct_rev() |> as.integer() |> as.factor()
+df$gap <- as.integer(df$gap)
+```
+
+```{r}
+death_dates <-
+filter(df, y == 4) |>
+  select(id, ddeath = day)
+
+df <- left_join(df, death_dates, by="id")
+```
+
+## Main dataset
+
+```{r}
+# Write out main dataset
+arrow::write_parquet(x = df,
+                     sink = "derived_data/violet_main.parquet")
+```
+
+## Death carried forward dataset
+
+```{r}
+# Create a version of the data where we carry death forward
+df_state_4 <-
+  df |>
+  mutate(y = as.integer(y),
+         yprev = as.integer(yprev)) |>
+  filter(y == 4) |>
+  group_by(id) |>
+  complete(day = ddeath:28,
+           fill=list(y=4L, yprev=4L, gap=1)) |>
+  arrange(id, day) |>
+  fill(everything())
+
+df_state_1_to_3 <-
+  df |>
+  mutate(y = as.integer(y),
+         yprev = as.integer(yprev)) |>
+  filter(y != 4) |>
+  arrange(id, day)
+
+df_forward <-
+  bind_rows(df_state_1_to_3, df_state_4) |>
+  mutate(y = as.ordered(y),
+         yprev = as.factor(yprev)) |>
+  arrange(id, day)
+```
+
+```{r}
+# Write out death carried forward dataset
+arrow::write_parquet(x = df_forward,
+                     sink = "derived_data/violet_death_carried_forward.parquet")
+```
+
+

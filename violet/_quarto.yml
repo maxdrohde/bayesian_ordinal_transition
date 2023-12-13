@@ -1,0 +1,43 @@
+project:
+  title: "ACTT-1 Analysis"
+  output-dir: _output
+  render:
+    - 1-clean_data.qmd
+    - 2-data_summary.qmd
+    - 3-create_eda_figures.qmd
+    - 4-model_fitting.qmd
+    - 5-model_analysis.qmd
+    - 6-derived_quantities.qmd
+    - 7-sops.qmd
+author: "Maximilian Rohde"
+date: today
+knitr:
+  opts_chunk: 
+    dev: "ragg_png"
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    code-tools: true
+    code-fold: false
+    code-link: true
+    standalone: true
+    embed-resources: true
+    code-block-bg: "#f1f3f5"
+    code-block-border-left: "#31BAE9"
+    mainfont: Source Sans Pro
+    theme: cosmo
+    fontsize: 16px
+    fig-format: retina
+    fig-cap-location: margin
+    tbl-cap-location: top
+    reference-location: margin
+    citation-location: margin
+    fig-width: 8
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+
+

@@ -1,0 +1,33 @@
+---
+title: "VIOLET Data Summary"
+---
+
+This file provides a general summary of the VIOLET dataset.
+
+## Load packages / data
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(Hmisc)
+```
+
+```{r}
+df <- arrow::read_parquet("derived_data/violet_main.parquet")
+```
+
+## Overall summary
+
+```{r}
+skimr::skim(df)
+```
+
+## Demographic variables summary
+
+```{r}
+df |>
+  distinct(id, .keep_all = TRUE) |>
+  Hmisc::describe() |>
+  html()
+```
+

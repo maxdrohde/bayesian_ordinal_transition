@@ -1,0 +1,62 @@
+---
+title: "VIOLET: Model Fitting"
+---
+
+This file fits the Bayesian ordinal transition model using the `rmsb` package.
+
+## Load packages / data
+
+```{r}
+# Fit the model if TRUE
+# Set FALSE if the model has already been fit to save time
+fit <- TRUE
+```
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(rmsb)
+
+# Set number of cores for parallel processing
+options(mc.cores = parallel::detectCores())
+
+set.seed(777)
+```
+
+## Read in data
+
+```{r}
+df <- arrow::read_parquet("derived_data/violet_main.parquet")
+```
+
+## Process data
+
+```{r}
+# Must be integer for model fitting
+df[, y := as.integer(y)]
+```
+
+## Statistical Modeling
+
+```{r}
+if (fit) {
+    model <-
+    blrm(
+      formula = y ~ yprev + rcs(age, 4) + rcs(day, 6) * tx,
+      ppo = ~ day,
+      cppo = function(y) y,
+      data = df,
+      refresh = 5,
+      iter = 2000,
+      chains = 4,
+      method = "sampling"
+  )
+  
+  # Save model to an RDS file
+  saveRDS(model, "./fitted_models/model1.rds")
+}
+```
+
+
+
+
