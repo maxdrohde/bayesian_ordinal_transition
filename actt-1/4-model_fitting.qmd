@@ -9,7 +9,7 @@ This file fits the Bayesian ordinal transition model using the `rmsb` package.
 ```{r}
 # Fit the model if TRUE
 # Set FALSE if the model has already been fit to save time
-fit <- FALSE
+fit <- TRUE
 ```
 
 ```{r}
@@ -46,6 +46,10 @@ if (fit) {
     model <-
     blrm(
       formula = y ~ yprev + rcs(age, 4) + rcs(day, 6) * tx + sex,
+      pcontrast=list(sd=2,
+                     c1=list(tx='Placebo', age=50, day = 8, yprev = 4, sex = "F"),
+                     c2=list(tx='Remdesivir', age=50, day = 8, yprev = 4, sex = "F"),
+                     contrast=expression(c1 - c2)),
       ppo = ~ day,
       cppo = function(y) y,
       data = df,
@@ -56,7 +60,7 @@ if (fit) {
   )
   
   # Save model to an RDS file
-  saveRDS(model, "/Users/max/paper1/analysis/actt1/fitted_models/model1.rds")
+  saveRDS(model, "fitted_models/model1.rds")
 }
 ```
 

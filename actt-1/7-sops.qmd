@@ -38,7 +38,7 @@ The file creates the visualizations for the state occupancy probabilities.
 ```{r}
 # Generating marginalized SOPs takes time
 # so set to FALSE unless they need to be regenerated
-generate_SOPS <- FALSE
+generate_SOPS <- TRUE
 ```
 
 ## Load packages
@@ -55,26 +55,8 @@ library(patchwork)
 library(furrr)
 future::plan(multisession, workers=12)
 
-set.seed(777)
-```
-
-```{r}
-library(showtext)
-
-# Add Google fonts
-font_add_google(
-  name = "Source Sans Pro",  
-  family = "Source Sans Pro"
-)
-
-# Automatically use {showtext} for plots
-showtext_auto()
-
-FONT_SIZE <- 10
-
-# Set global ggplot theme
-theme_set(cowplot::theme_cowplot(font_size=FONT_SIZE,
-                                 font_family = "Source Sans Pro"))
+# Load default plotting theme and set seed
+source("scripts/load_defaults.R")
 ```
 
 ## Read in data
@@ -84,8 +66,7 @@ df <- read_parquet("derived_data/actt1_main.parquet")
 ```
 
 ```{r}
-# y ~ yprev + rcs(age, 4) + rcs(day, 4) * tx
-mod <- readRDS("/Users/max/paper1/analysis/actt1/fitted_models/model1.rds")
+mod <- readRDS("fitted_models/model1.rds")
 ```
 
 ```{r}

@@ -1,0 +1,89 @@
+---
+title: "ACTT-1: Generate Simulated Data"
+---
+
+Purpose: Simulate data from the fitted model
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rmsb)
+
+library(ggdist)
+library(patchwork)
+
+library(furrr)
+future::plan(multisession, workers=12)
+
+# Load default plotting theme and set seed
+source("scripts/load_defaults.R")
+source("scripts/simulate_data.R")
+```
+
+## Read in data
+
+```{r}
+# Read in main dataset
+df <-
+  read_parquet("derived_data/actt1_main.parquet") |>
+  as.data.frame()
+
+# Read in fitted blrm model
+mod <- readRDS("fitted_models/model1.rds")
+```
+
+## Example (only run for testing)
+
+```{r}
+# x <- df[1,][, c("tx", "sex", "age")]
+# 
+# generate_record(
+#       x = x,
+#       baseline_y = 4,
+#       model = mod,
+#       y_levels = 1:8,
+#       times = 1:28,
+#       absorb = 8,
+#       id = 1
+#     )
+```
+
+## Simulate data
+
+```{r}
+# Create a list of data frames -- one for each covariate setting in the data
+covars <-
+df |>
+  filter(day == 1) |>
+  select(id, age, sex, tx, yprev)
+  
+covars <-
+  map(1:nrow(covars), ~covars[.x, ])
+```
+
+```{r}
+# Simulate a trajectory for each covariate setting and combine into a data frame
+res <- 
+  future_map(
+    covars,
+    ~generate_record(
+      x = .x[, c(-1, -5)],
+      baseline_y = .x[[5]],
+      model = mod,
+      y_levels = 1:8,
+      times = 1:28,
+      absorb = 8,
+      id = .x[[1]]
+    ),
+    .progress = TRUE) |>
+  list_rbind()
+```
+
+```{r}
+# Write out simulated dataset
+arrow::write_parquet(x = res,
+                     sink = "derived_data/simulated_data.parquet")
+```

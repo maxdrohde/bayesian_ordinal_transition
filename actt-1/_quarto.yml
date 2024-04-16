@@ -9,6 +9,8 @@ project:
     - 5-model_analysis.qmd
     - 6-derived_quantities.qmd
     - 7-sops.qmd
+    - 8-simulate_data.qmd
+    - 9-analyze_simulated_data.qmd
 author: "Maximilian Rohde"
 date: today
 knitr:

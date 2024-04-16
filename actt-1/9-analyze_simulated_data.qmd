@@ -1,0 +1,226 @@
+---
+title: "ACTT-1: Analyze Simulated Data"
+---
+
+Purpose: Analyze the simulated data from the fitted model
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(arrow)
+library(rmsb)
+
+library(ggdist)
+library(patchwork)
+
+library(furrr)
+future::plan(multisession, workers=12)
+
+# Load default plotting theme and set seed
+source("scripts/load_defaults.R")
+source("scripts/simulate_data.R")
+```
+
+## Read in data
+
+```{r}
+# Read in main dataset
+df <-
+  read_parquet("derived_data/actt1_main.parquet") |>
+  as.data.frame()
+
+df_forward <-
+  read_parquet("derived_data/actt1_death_carried_forward.parquet") |>
+  as.data.frame()
+
+# Read in simulated dataset
+sim_df <-
+  read_parquet("derived_data/simulated_data.parquet") |>
+  as.data.frame() |>
+  mutate(day = times)
+```
+
+## Correlation
+
+### Actual
+
+```{r}
+corr_actual <-
+  df_forward |>
+    select(id, day, y) |>
+    arrange(day) |>
+    mutate(y = as.integer(y)) |>
+    pivot_wider(names_from = day, values_from = y) |>
+    ungroup() |>
+    select(-id) |>
+    cor(method="spearman", use="pairwise.complete.obs")
+```
+
+```{r}
+# Create correlation plot
+fig_corr_actual <-
+  corr_actual |>
+  as.data.frame() |>
+  rownames_to_column() |>
+  pivot_longer(-rowname) |>
+  mutate(rowname = as.integer(rowname), name = as.integer(name)) |>
+  mutate(rowname = as.factor(rowname), name = as.factor(name)) |>
+  filter(rowname != name) |>
+  ggplot() + 
+    aes(x=rowname, y=name, fill=value) +
+    geom_tile() +
+    geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
+              color="black",
+              size = 1) +
+    scale_fill_viridis_c(limits=c(0,1), breaks = seq(0,1, length.out = 11)) +
+    expand_limits(value = c(0, 1)) +
+    cowplot::theme_half_open(font_size= 8,
+              font_family = "Source Sans Pro") +
+    theme(
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank()) +
+    theme(legend.position = "none") +
+    labs(x="Study Day",
+         y="Study Day",
+         fill="",
+         subtitle = "A) Actual Data")
+```
+
+### Simulated
+
+```{r}
+# Create a version of the data where we carry death forward
+df_state_8 <-
+  sim_df |>
+  mutate(y = as.integer(y),
+         yprev = as.integer(yprev)) |>
+  filter(y == 8) |>
+  mutate(ddeath = day) |>
+  group_by(id) |>
+  complete(day = ddeath:28,
+           fill=list(y=8L, yprev=8L, gap=1)) |>
+  arrange(id, day) |>
+  fill(everything())
+
+df_state_1_to_7 <-
+  sim_df |>
+  mutate(y = as.integer(y),
+         yprev = as.integer(yprev)) |>
+  filter(y != 8) |>
+  arrange(id, day)
+
+sim_df_forward <-
+  bind_rows(df_state_1_to_7, df_state_8) |>
+  mutate(y = as.ordered(y),
+         yprev = as.factor(yprev)) |>
+  arrange(id, day)
+```
+
+```{r}
+# Create correlation matrix
+# We use the data with death carried forward
+corr_sim <-
+  sim_df_forward |>
+  select(id, day, y) |>
+  arrange(day) |>
+  mutate(y = as.integer(y)) |>
+  pivot_wider(names_from = day, values_from = y) |>
+  ungroup() |>
+  select(-id) |>
+  cor(method="spearman", use="pairwise.complete.obs")
+```
+
+```{r}
+# Create correlation plot
+fig_corr_simulated <-
+  corr_sim |>
+  as.data.frame() |>
+  rownames_to_column() |>
+  pivot_longer(-rowname) |>
+  mutate(rowname = as.integer(rowname), name = as.integer(name)) |>
+  mutate(rowname = as.factor(rowname), name = as.factor(name)) |>
+  filter(rowname != name) |>
+  ggplot() + 
+  aes(x=rowname, y=name, fill=value) +
+  geom_tile() +
+  geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
+            color="black",
+            size = 1) +
+  scale_fill_viridis_c(limits=c(0,1), breaks = seq(0,1, length.out = 11)) +
+  expand_limits(value = c(0, 1)) +
+  cowplot::theme_half_open(font_size= 8,
+                           font_family = "Source Sans Pro") +
+  theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank()) +
+  theme(legend.key.height = unit(0.6, "in")) +
+  labs(x="Study Day",
+       y="Study Day",
+       fill="",
+       subtitle = "B) Simulated Data from Model Fit")
+```
+
+### Merge
+
+```{r}
+ggsave(
+  filename = "./figures/correlation_comparison.pdf", 
+  plot = fig_corr_actual + fig_corr_simulated,
+  units="in",
+  height= 4,
+  width = 8,
+  dpi=500)
+```
+
+### Difference
+
+```{r}
+fig_diff <-
+  (corr_sim - corr_actual) |>
+  as.data.frame() |>
+  rownames_to_column() |>
+  pivot_longer(-rowname) |>
+  mutate(rowname = as.integer(rowname), name = as.integer(name)) |>
+  mutate(rowname = as.factor(rowname), name = as.factor(name)) |>
+  filter(rowname != name) |>
+  ggplot() + 
+  aes(x=rowname, y=name, fill=value) +
+  geom_tile() +
+  geom_text(mapping=aes(x=rowname, y=name, label=round(value, 2)),
+            color="black",
+            size = 2.5) +
+  scale_fill_distiller(type="div",
+                       palette = "RdBu",
+                       direction = 1,
+                       limits = c(-0.1, 0.1),
+                       breaks = seq(-0.1, 0.1, 0.02)) +
+  cowplot::theme_half_open(font_size=FONT_SIZE,
+                           font_family = "Source Sans Pro") +
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank()) +
+  theme(legend.key.height = unit(0.8, "in")) +
+  labs(x="Study Day",
+       y="Study Day",
+       fill="",
+       title = "Difference in correlation (simulated - actual)")
+```
+
+```{r}
+ggsave(
+  filename = "./figures/correlation_comparison_difference.pdf", 
+  plot = fig_diff,
+  units="in",
+  height=8,
+  width=8,
+  dpi=500)
+```
+

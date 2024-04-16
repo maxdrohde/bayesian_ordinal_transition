@@ -18,32 +18,13 @@ library(patchwork)
 library(furrr)
 future::plan(multisession, workers=12)
 
-set.seed(777)
+# Load default plotting theme and set seed
+source("scripts/load_defaults.R")
 ```
 
 ```{r}
-source("helper_functions/mean_time_unwell.R")
-source("helper_functions/days_benefit.R")
-```
-
-
-```{r}
-library(showtext)
-
-# Add Google fonts
-font_add_google(
-  name = "Source Sans Pro",  
-  family = "Source Sans Pro"
-)
-
-# Automatically use {showtext} for plots
-showtext_auto()
-
-FONT_SIZE <- 10
-
-# Set global ggplot theme
-theme_set(cowplot::theme_cowplot(font_size=FONT_SIZE,
-                                 font_family = "Source Sans Pro"))
+source("scripts/difference_in_mean_time_in_states.R")
+source("scripts/days_benefit.R")
 ```
 
 ## Read in data
@@ -54,7 +35,7 @@ df <- read_parquet("derived_data/actt1_main.parquet")
 
 ```{r}
 # y ~ yprev + rcs(age, 4) + rcs(day, 4) * tx
-mod <- readRDS("/Users/max/paper1/analysis/actt1/fitted_models/model1.rds")
+mod <- readRDS("fitted_models/model1.rds")
 ```
 
 ```{r}
@@ -86,18 +67,23 @@ sop_tx <- soprobMarkovOrdm(
 ```
 
 ```{r}
-mean_time_unwell <- calculate_mean_time_unwell(sop_tx, sop_placebo, threshold = 3)
-days_benefit <- calculate_days_benefit(sop_tx, sop_placebo)
+difference_in_mean_time_recovered <- 
+  calculate_difference_in_mean_time_in_states(sop_tx,
+                                              sop_placebo,
+                                              states = c(1,2,3))
+
+days_benefit <- calculate_days_benefit(sop_tx,
+                                       sop_placebo)
 ```
 
 ```{r}
-hdpi <- HPDint(mean_time_unwell)
+hdpi <- HPDint(difference_in_mean_time_recovered)
 lower <- hdpi[[1]]
 upper <- hdpi[[2]]
 
-posterior_median <- median(mean_time_unwell)
-p_greater_than_0 <- mean(mean_time_unwell > 0)
-p_greater_than_1 <- mean(mean_time_unwell > 1)
+posterior_median <- median(difference_in_mean_time_recovered)
+p_greater_than_0 <- mean(difference_in_mean_time_recovered > 0)
+p_greater_than_1 <- mean(difference_in_mean_time_recovered > 1)
 
 label <-
   glue::glue("
@@ -108,7 +94,7 @@ label <-
 ")
 
 fig1 <-
-tibble(x = mean_time_unwell) |>
+tibble(x = difference_in_mean_time_recovered) |>
   ggplot() +
   aes(x = x, y = after_stat(density)) +
   geom_histogram(bins = 100, color="black", fill="gray") +
@@ -164,7 +150,7 @@ covars <- expand.grid(age = seq(30, 80, by=5), yprev = c(4,5,6,7))
 get_diff <- function(age, yprev){
   
 # Placebo
-sop_1 <- soprobMarkovOrdm(
+sop_placebo <- soprobMarkovOrdm(
   mod,
   data = list(tx = "Placebo", age = age, sex="M", yprev=yprev),
   times = 1:28,
@@ -175,7 +161,7 @@ sop_1 <- soprobMarkovOrdm(
 )
 
 # Treatment
-sop_2 <- soprobMarkovOrdm(
+sop_tx <- soprobMarkovOrdm(
   mod,
   data = list(tx = "Remdesivir", age = age, sex="M", yprev=yprev),
   times = 1:28,
@@ -185,14 +171,14 @@ sop_2 <- soprobMarkovOrdm(
   pvarname = "yprev"
 )
 
-  diff_in_mean_time_unwell <-
-  calculate_mean_time_unwell(
-                            sop_2,
-                            sop_1,
-                            threshold = 3
+  diff_in_mean_time_recovered <-
+  calculate_difference_in_mean_time_in_states(
+                            sop_tx,
+                            sop_placebo,
+                            states = c(1,2,3)
                              )
 
-   return(mean(diff_in_mean_time_unwell > 1))                  
+   return(mean(diff_in_mean_time_recovered > 1))                  
 }
 
 covars$p_benefit_1 <- future_pmap_dbl(covars,

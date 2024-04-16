@@ -15,26 +15,8 @@ library(ggdist)
 library(patchwork)
 library(geomtextpath)
 
-set.seed(777)
-
-FONT_SIZE <- 10
-```
-
-```{r}
-library(showtext)
-
-# Add Google fonts
-font_add_google(
-  name = "Source Sans Pro",  
-  family = "Source Sans Pro"
-)
-
-# Automatically use {showtext} for plots
-showtext_auto()
-
-# Set global ggplot theme
-theme_set(cowplot::theme_cowplot(font_size=FONT_SIZE,
-                                 font_family = "Source Sans Pro"))
+# Load default plotting theme and set seed
+source("scripts/load_defaults.R")
 ```
 
 
@@ -123,7 +105,7 @@ df_forward |>
   ggplot() +
   aes(x = day, y = n, color=y, linetype=tx) +
   geom_line() +
-  geom_point(alpha=0.6, size=1.5) +
+  geom_point(alpha=0.6, size=0.5) +
   scale_x_continuous(breaks = unique(df_forward$day)) +
   scale_color_brewer(palette = "Dark2") +
   scale_y_continuous(breaks = seq(0, 1, by=0.1)) +
