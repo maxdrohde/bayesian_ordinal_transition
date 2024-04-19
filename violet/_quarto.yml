@@ -1,5 +1,5 @@
 project:
-  title: "ACTT-1 Analysis"
+  title: "VIOLET Analysis"
   output-dir: _output
   render:
     - 1-clean_data.qmd

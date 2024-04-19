@@ -9,7 +9,7 @@ This file fits the Bayesian ordinal transition model using the `rmsb` package.
 ```{r}
 # Fit the model if TRUE
 # Set FALSE if the model has already been fit to save time
-fit <- TRUE
+fit <- FALSE
 ```
 
 ```{r}
